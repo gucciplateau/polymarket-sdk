@@ -1250,6 +1250,7 @@ mod tests {
             },
             owner: "fe9fb6b1-9ae6-6c5b-3cca-1ace6a8b1f29".to_string(),
             order_type: OrderType::GTC,
+            post_only: false,
         };
 
         let json = serde_json::to_string(&order).unwrap();
