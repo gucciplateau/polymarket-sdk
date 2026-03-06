@@ -957,7 +957,7 @@ impl ClobClient {
             PolymarketError::config("API credentials required for cancelling orders")
         })?;
 
-        let endpoint = "/order/cancel-all";
+        let endpoint = "/cancel-all";
         let url = format!("{}{}", self.config.base_url, endpoint);
 
         let headers =
