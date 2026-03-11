@@ -909,6 +909,55 @@ impl ClobClient {
         Ok(paginated.data)
     }
 
+    /// Cancel a single order by ID
+    #[instrument(skip(self))]
+    pub async fn cancel(&self, order_id: &str) -> Result<CancelResponse> {
+        self.wait_for_rate_limit().await;
+
+        let api_creds = self.api_credentials.as_ref().ok_or_else(|| {
+            PolymarketError::config("API credentials required for cancelling an order")
+        })?;
+
+        let endpoint = "/order";
+        let url = format!("{}{}", self.config.base_url, endpoint);
+
+        // Body matches Python: {"orderID": order_id}, compact JSON
+        let body = serde_json::json!({ "orderID": order_id });
+        let serialized = serde_json::to_string(&body).map_err(|e| {
+            PolymarketError::parse_with_source(format!("Failed to serialize cancel body: {e}"), e)
+        })?;
+
+        let headers =
+            create_l2_headers::<String>(&self.signer, api_creds, "DELETE", endpoint, Some(&serialized))?;
+
+        debug!(order_id = %order_id, "Cancelling order");
+
+        let mut req_builder = self
+            .client
+            .delete(&url)
+            .header("Content-Type", "application/json")
+            .body(serialized);
+        for (key, value) in &headers {
+            req_builder = req_builder.header(*key, value);
+        }
+
+        let response = req_builder.send().await?;
+        let status = response.status();
+
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(PolymarketError::api(status.as_u16(), body));
+        }
+
+        let result: CancelResponse = response.json().await.map_err(|e| {
+            PolymarketError::parse_with_source(format!("Failed to parse cancel response: {e}"), e)
+        })?;
+
+        info!(order_id = %order_id, "Order cancelled");
+
+        Ok(result)
+    }
+
     /// Cancel orders by IDs
     #[instrument(skip(self))]
     pub async fn cancel_orders(&self, order_ids: Vec<String>) -> Result<CancelResponse> {
@@ -918,15 +967,24 @@ impl ClobClient {
             PolymarketError::config("API credentials required for cancelling orders")
         })?;
 
-        let endpoint = "/order";
+        let endpoint = "/orders";
         let url = format!("{}{}", self.config.base_url, endpoint);
 
-        let body = CancelOrdersRequest { order_ids };
-        let headers = create_l2_headers(&self.signer, api_creds, "DELETE", endpoint, Some(&body))?;
+        // Serialize the raw order_ids array directly (no wrapper struct), compact JSON
+        let serialized = serde_json::to_string(&order_ids).map_err(|e| {
+            PolymarketError::parse_with_source(format!("Failed to serialize order_ids: {e}"), e)
+        })?;
+
+        let headers =
+            create_l2_headers::<String>(&self.signer, api_creds, "DELETE", endpoint, Some(&serialized))?;
 
         debug!("Cancelling orders");
 
-        let mut req_builder = self.client.delete(&url).json(&body);
+        let mut req_builder = self
+            .client
+            .delete(&url)
+            .header("Content-Type", "application/json")
+            .body(serialized);
         for (key, value) in &headers {
             req_builder = req_builder.header(*key, value);
         }
