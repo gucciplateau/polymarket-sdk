@@ -746,7 +746,11 @@ impl ClobClient {
     ///
     /// Requires API credentials to be set via `with_api_credentials`.
     #[instrument(skip(self, order))]
-    pub async fn submit_order(&self, order: &SignedOrderRequest, post_only: bool) -> Result<OrderResponse> {
+    pub async fn submit_order(
+        &self,
+        order: &SignedOrderRequest,
+        post_only: bool,
+    ) -> Result<OrderResponse> {
         use crate::types::{NewOrder, OrderType};
 
         self.wait_for_rate_limit().await;
@@ -761,8 +765,13 @@ impl ClobClient {
         // IMPORTANT: Convert SignedOrderRequest to NewOrder format
         // - Use api_key as owner (NOT wallet address) - matches TypeScript SDK behavior
         // - Wrap order data in nested structure with orderType and deferExec
-        let new_order =
-            NewOrder::from_signed_order(order, &api_creds.api_key, OrderType::GTC, false, post_only);
+        let new_order = NewOrder::from_signed_order(
+            order,
+            &api_creds.api_key,
+            OrderType::GTC,
+            false,
+            post_only,
+        );
 
         // CRITICAL FIX: Serialize JSON ONCE and reuse for all operations
         // This ensures L2 HMAC, Builder HMAC, and HTTP body all use identical JSON
@@ -918,17 +927,49 @@ impl ClobClient {
             PolymarketError::config("API credentials required for cancelling an order")
         })?;
 
-        let endpoint = "/order";
+        let endpoint = "/cancel";
         let url = format!("{}{}", self.config.base_url, endpoint);
 
-        // Body matches Python: {"orderID": order_id}, compact JSON
-        let body = serde_json::json!({ "orderID": order_id });
-        let serialized = serde_json::to_string(&body).map_err(|e| {
-            PolymarketError::parse_with_source(format!("Failed to serialize cancel body: {e}"), e)
-        })?;
+        // Body: {"orderID": order_id}, compact JSON — matches Python reference exactly
+        let body_str =
+            serde_json::to_string(&serde_json::json!({ "orderID": order_id })).map_err(|e| {
+                PolymarketError::parse_with_source(
+                    format!("Failed to serialize cancel body: {e}"),
+                    e,
+                )
+            })?;
 
-        let headers =
-            create_l2_headers::<String>(&self.signer, api_creds, "DELETE", endpoint, Some(&serialized))?;
+        // Single timestamp shared across L2 and Builder headers — same pattern as submit_order
+        let timestamp = get_current_unix_time_secs();
+
+        let address = if let Some(ref addr) = self.auth_address {
+            if addr.starts_with("0x") {
+                addr.clone()
+            } else {
+                format!("0x{}", addr)
+            }
+        } else {
+            format!("{:?}", self.signer.address())
+        };
+
+        let mut headers = create_l2_headers_with_body_string(
+            &address, api_creds, "DELETE", endpoint, &body_str, timestamp,
+        )?;
+
+        if let Some(ref builder) = self.builder_signer {
+            let builder_headers = builder
+                .create_builder_header_payload(
+                    "DELETE",
+                    endpoint,
+                    Some(&body_str),
+                    Some(timestamp as i64),
+                )
+                .map_err(|e| PolymarketError::internal(format!("Builder header error: {}", e)))?;
+            for (key, value) in builder_headers {
+                let static_key: &'static str = Box::leak(key.into_boxed_str());
+                headers.insert(static_key, value);
+            }
+        }
 
         debug!(order_id = %order_id, "Cancelling order");
 
@@ -936,7 +977,7 @@ impl ClobClient {
             .client
             .delete(&url)
             .header("Content-Type", "application/json")
-            .body(serialized);
+            .body(body_str);
         for (key, value) in &headers {
             req_builder = req_builder.header(*key, value);
         }
@@ -958,7 +999,7 @@ impl ClobClient {
         Ok(result)
     }
 
-    /// Cancel orders by IDs
+    /// Cancel multiple orders by IDs
     #[instrument(skip(self))]
     pub async fn cancel_orders(&self, order_ids: Vec<String>) -> Result<CancelResponse> {
         self.wait_for_rate_limit().await;
@@ -967,16 +1008,45 @@ impl ClobClient {
             PolymarketError::config("API credentials required for cancelling orders")
         })?;
 
-        let endpoint = "/orders";
+        let endpoint = "/cancel-orders";
         let url = format!("{}{}", self.config.base_url, endpoint);
 
-        // Serialize the raw order_ids array directly (no wrapper struct), compact JSON
-        let serialized = serde_json::to_string(&order_ids).map_err(|e| {
+        // Body is a raw JSON array of order ID strings — no wrapper struct
+        let body_str = serde_json::to_string(&order_ids).map_err(|e| {
             PolymarketError::parse_with_source(format!("Failed to serialize order_ids: {e}"), e)
         })?;
 
-        let headers =
-            create_l2_headers::<String>(&self.signer, api_creds, "DELETE", endpoint, Some(&serialized))?;
+        // Single timestamp shared across L2 and Builder headers — same pattern as submit_order
+        let timestamp = get_current_unix_time_secs();
+
+        let address = if let Some(ref addr) = self.auth_address {
+            if addr.starts_with("0x") {
+                addr.clone()
+            } else {
+                format!("0x{}", addr)
+            }
+        } else {
+            format!("{:?}", self.signer.address())
+        };
+
+        let mut headers = create_l2_headers_with_body_string(
+            &address, api_creds, "DELETE", endpoint, &body_str, timestamp,
+        )?;
+
+        if let Some(ref builder) = self.builder_signer {
+            let builder_headers = builder
+                .create_builder_header_payload(
+                    "DELETE",
+                    endpoint,
+                    Some(&body_str),
+                    Some(timestamp as i64),
+                )
+                .map_err(|e| PolymarketError::internal(format!("Builder header error: {}", e)))?;
+            for (key, value) in builder_headers {
+                let static_key: &'static str = Box::leak(key.into_boxed_str());
+                headers.insert(static_key, value);
+            }
+        }
 
         debug!("Cancelling orders");
 
@@ -984,7 +1054,7 @@ impl ClobClient {
             .client
             .delete(&url)
             .header("Content-Type", "application/json")
-            .body(serialized);
+            .body(body_str);
         for (key, value) in &headers {
             req_builder = req_builder.header(*key, value);
         }
