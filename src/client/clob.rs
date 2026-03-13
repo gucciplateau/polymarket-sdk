@@ -927,7 +927,7 @@ impl ClobClient {
             PolymarketError::config("API credentials required for cancelling an order")
         })?;
 
-        let endpoint = "/cancel";
+        let endpoint = "/order";
         let url = format!("{}{}", self.config.base_url, endpoint);
 
         // Body: {"orderID": order_id}, compact JSON — matches Python reference exactly
@@ -1008,7 +1008,7 @@ impl ClobClient {
             PolymarketError::config("API credentials required for cancelling orders")
         })?;
 
-        let endpoint = "/cancel-orders";
+        let endpoint = "/orders";
         let url = format!("{}{}", self.config.base_url, endpoint);
 
         // Body is a raw JSON array of order ID strings — no wrapper struct
